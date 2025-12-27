@@ -1,0 +1,31 @@
+# Training Configuration for Diffusion Transformer (Flow Matching)
+# CIFAR10: 32x32 images, with patch_size=4: 8x8=64 patches
+
+# Dataset
+dataset: cifar10
+
+# Model parameters
+embedding_dim: 384
+num_heads: 6
+num_transformer_blocks: 6
+patch_size: 4
+sequence_len: 64  # (32/4)^2 = 64 patches for CIFAR10
+input_dim: 3  # RGB channels
+
+# Training parameters
+batch_size: 64
+learning_rate: 0.0003
+num_epochs: 100
+optimizer: adam  # Options: 'adam' or 'sgd'
+weight_decay: 0.0001
+
+# Device and data parameters
+device: auto  # Options: 'auto', 'cuda', or 'cpu'
+num_workers: 2
+data_root: ./data
+
+# Logging and checkpointing
+log_interval: 100  # Log every N batches
+save_interval: 1000  # Save checkpoint every N batches
+checkpoint_dir: ./checkpoints
+

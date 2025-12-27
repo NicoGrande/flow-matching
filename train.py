@@ -1,18 +1,17 @@
+import argparse
 import torch
 from torch import nn
 from torch import optim
-import torchvision
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
 import logging
-import yaml
 from pathlib import Path
-from pydantic import BaseModel, Field
 from typing import Optional, Tuple
 import os
 import re
 import glob
 
+from config import TrainingConfig
+from datasets import get_cifar10_dataloaders
+from datasets import get_imagenet_dataloaders
 from models.diffusion_transformer import DiffusionTransformer
 
 
@@ -21,114 +20,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-class TrainingConfig(BaseModel):
-    """Configuration for training the Diffusion Transformer model."""
-
-    # Model parameters
-    embedding_dim: int = Field(..., description="Dimension of embeddings")
-    num_heads: int = Field(..., description="Number of attention heads")
-    num_transformer_blocks: int = Field(..., description="Number of transformer blocks")
-    patch_size: int = Field(
-        ..., description="Size of each patch (assumes square patches)"
-    )
-    sequence_len: int = Field(..., description="Sequence length (number of patches)")
-    input_dim: int = Field(
-        default=3, description="Number of input channels (3 for RGB)"
-    )
-
-    # Training parameters
-    batch_size: int = Field(..., description="Batch size for training")
-    learning_rate: float = Field(..., description="Learning rate")
-    num_epochs: int = Field(..., description="Number of training epochs")
-    optimizer: str = Field(
-        default="adam", description="Optimizer type: 'adam' or 'sgd'"
-    )
-    weight_decay: float = Field(default=0.0, description="Weight decay for optimizer")
-
-    # Device and data parameters
-    device: str = Field(
-        default="auto", description="Device to use: 'auto', 'cuda', or 'cpu'"
-    )
-    num_workers: int = Field(default=2, description="Number of data loader workers")
-    data_root: str = Field(default="./data", description="Root directory for data")
-
-    # Logging and checkpointing
-    log_interval: int = Field(
-        default=100, description="Log training metrics every N batches"
-    )
-    save_interval: int = Field(
-        default=1000, description="Save checkpoint every N batches"
-    )
-    checkpoint_dir: str = Field(
-        default="./checkpoints", description="Directory to save checkpoints"
-    )
-
-    @classmethod
-    def from_yaml(cls, yaml_path: str) -> "TrainingConfig":
-        """Load configuration from a YAML file.
-
-        Args:
-            yaml_path: Path to the YAML configuration file.
-
-        Returns:
-            TrainingConfig instance.
-        """
-        with open(yaml_path, "r") as f:
-            config_dict = yaml.safe_load(f)
-        return cls(**config_dict)
-
-    def get_device(self) -> torch.device:
-        """Get the appropriate device for training.
-
-        Returns:
-            torch.device instance.
-        """
-        if self.device == "auto":
-            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        return torch.device(self.device)
-
-
-def get_cifar10_dataloaders(config: TrainingConfig):
-    """Get CIFAR10 data loaders.
-
-    Args:
-        config: Training configuration.
-
-    Returns:
-        Tuple of (train_loader, test_loader).
-    """
-    # Define transformations (e.g., convert to tensor and normalize)
-    transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-    )
-
-    # Load training data
-    trainset = torchvision.datasets.CIFAR10(
-        root=config.data_root, train=True, download=True, transform=transform
-    )
-    trainloader = DataLoader(
-        trainset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
-        pin_memory=True if config.get_device().type == "cuda" else False,
-    )
-
-    # Load test data
-    testset = torchvision.datasets.CIFAR10(
-        root=config.data_root, train=False, download=True, transform=transform
-    )
-    testloader = DataLoader(
-        testset,
-        batch_size=config.batch_size,
-        shuffle=False,
-        num_workers=config.num_workers,
-        pin_memory=True if config.get_device().type == "cuda" else False,
-    )
-
-    return trainloader, testloader
 
 
 def initialize_config(yaml_path: Optional[str] = None) -> TrainingConfig:
@@ -201,7 +92,9 @@ def load_latest_checkpoint(
         else:
             return None
     else:
-        logger.info(f"Found latest checkpoint: {latest_checkpoint} (step {latest_step})")
+        logger.info(
+            f"Found latest checkpoint: {latest_checkpoint} (step {latest_step})"
+        )
 
     # Load the checkpoint
     try:
@@ -236,7 +129,13 @@ def train(yaml_path: Optional[str] = None):
     )
 
     # Get data loaders
-    train_dataloader, test_dataloader = get_cifar10_dataloaders(config)
+    if config.dataset == "cifar10":
+        train_dataloader, test_dataloader = get_cifar10_dataloaders(config)
+    elif config.dataset == "imagenet":
+        train_dataloader, test_dataloader = get_imagenet_dataloaders(config)
+    else:
+        raise ValueError(f"Unknown dataset {config.dataset}.")
+
     logger.info(f"Data loaders initialized. Training batches: {len(train_dataloader)}")
 
     # Loss function
@@ -265,30 +164,30 @@ def train(yaml_path: Optional[str] = None):
     start_epoch = 0
     global_step = 0
     checkpoint_data = load_latest_checkpoint(config.checkpoint_dir, device)
-    
+
     if checkpoint_data is not None:
         checkpoint, checkpoint_path = checkpoint_data
         logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
-        
+
         # Load model state
         if "model_state_dict" in checkpoint:
             model.load_state_dict(checkpoint["model_state_dict"])
             logger.info("Model state loaded from checkpoint")
-        
+
         # Load optimizer state
         if "optimizer_state_dict" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             logger.info("Optimizer state loaded from checkpoint")
-        
+
         # Resume from saved epoch and step
         if "epoch" in checkpoint:
             start_epoch = checkpoint["epoch"] + 1  # Start from next epoch
             logger.info(f"Resuming from epoch {start_epoch}")
-        
+
         if "step" in checkpoint:
             global_step = checkpoint["step"]
             logger.info(f"Resuming from global step {global_step}")
-        
+
         if "loss" in checkpoint:
             logger.info(f"Last checkpoint loss: {checkpoint['loss']:.6f}")
     else:
@@ -433,8 +332,6 @@ def train(yaml_path: Optional[str] = None):
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(
         description="Train Diffusion Transformer for Flow Matching"
     )
