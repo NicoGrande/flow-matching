@@ -8,8 +8,10 @@ import logging
 import yaml
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Tuple
 import os
+import re
+import glob
 
 from models.diffusion_transformer import DiffusionTransformer
 
@@ -158,6 +160,59 @@ def initialize_config(yaml_path: Optional[str] = None) -> TrainingConfig:
         )
 
 
+def load_latest_checkpoint(
+    checkpoint_dir: str, device: torch.device
+) -> Optional[Tuple[dict, str]]:
+    """Load the latest checkpoint from the checkpoint directory if one exists.
+
+    Args:
+        checkpoint_dir: Directory containing checkpoint files.
+        device: Device to load the checkpoint on.
+
+    Returns:
+        Tuple of (checkpoint dict, checkpoint path) if found, None otherwise.
+    """
+    checkpoint_dir_path = Path(checkpoint_dir)
+    if not checkpoint_dir_path.exists():
+        return None
+
+    # Look for checkpoint files matching pattern checkpoint_step_*.pt
+    checkpoint_pattern = checkpoint_dir_path / "checkpoint_step_*.pt"
+    checkpoint_files = glob.glob(str(checkpoint_pattern))
+
+    latest_checkpoint = None
+    latest_step = -1
+
+    # Find the checkpoint with the highest step number
+    for checkpoint_path in checkpoint_files:
+        match = re.search(r"checkpoint_step_(\d+)\.pt", checkpoint_path)
+        if match:
+            step = int(match.group(1))
+            if step > latest_step:
+                latest_step = step
+                latest_checkpoint = checkpoint_path
+
+    # If no step-based checkpoint found, check for final_model.pt
+    if latest_checkpoint is None:
+        final_model_path = checkpoint_dir_path / "final_model.pt"
+        if final_model_path.exists():
+            latest_checkpoint = str(final_model_path)
+            logger.info(f"Found final model checkpoint: {latest_checkpoint}")
+        else:
+            return None
+    else:
+        logger.info(f"Found latest checkpoint: {latest_checkpoint} (step {latest_step})")
+
+    # Load the checkpoint
+    try:
+        checkpoint = torch.load(latest_checkpoint, map_location=device)
+        logger.info(f"Successfully loaded checkpoint from {latest_checkpoint}")
+        return checkpoint, latest_checkpoint
+    except Exception as e:
+        logger.error(f"Failed to load checkpoint from {latest_checkpoint}: {e}")
+        return None
+
+
 def train(yaml_path: Optional[str] = None):
     """Train the Diffusion Transformer model for flow matching.
 
@@ -206,11 +261,43 @@ def train(yaml_path: Optional[str] = None):
 
     logger.info(f"Using optimizer: {config.optimizer}")
 
+    # Try to load from checkpoint if one exists
+    start_epoch = 0
+    global_step = 0
+    checkpoint_data = load_latest_checkpoint(config.checkpoint_dir, device)
+    
+    if checkpoint_data is not None:
+        checkpoint, checkpoint_path = checkpoint_data
+        logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
+        
+        # Load model state
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            logger.info("Model state loaded from checkpoint")
+        
+        # Load optimizer state
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            logger.info("Optimizer state loaded from checkpoint")
+        
+        # Resume from saved epoch and step
+        if "epoch" in checkpoint:
+            start_epoch = checkpoint["epoch"] + 1  # Start from next epoch
+            logger.info(f"Resuming from epoch {start_epoch}")
+        
+        if "step" in checkpoint:
+            global_step = checkpoint["step"]
+            logger.info(f"Resuming from global step {global_step}")
+        
+        if "loss" in checkpoint:
+            logger.info(f"Last checkpoint loss: {checkpoint['loss']:.6f}")
+    else:
+        logger.info("No checkpoint found, starting training from scratch")
+
     # Training loop
     model.train()
-    global_step = 0
 
-    for epoch in range(config.num_epochs):
+    for epoch in range(start_epoch, config.num_epochs):
         epoch_loss = 0.0
         num_batches = 0
 
@@ -327,9 +414,11 @@ def train(yaml_path: Optional[str] = None):
 
                 test_loss += loss
                 test_batch_count += 1
-            
-        logging.info(f"Epoch {epoch + 1} average test loss: {test_loss / test_batch_count:.6f}")
-            
+
+        logger.info(
+            f"Epoch {epoch + 1} average test loss: {test_loss / test_batch_count:.6f}"
+        )
+
     # Save final model
     final_model_path = os.path.join(config.checkpoint_dir, "final_model.pt")
     torch.save(

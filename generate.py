@@ -264,4 +264,3 @@ if __name__ == "__main__":
         config_path=args.config,
         device=args.device,
     )
-

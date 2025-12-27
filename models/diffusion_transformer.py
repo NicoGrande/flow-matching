@@ -309,7 +309,7 @@ class DiffusionTransformer(nn.Module):
             x = transformer_block(x, cond)
 
         out = self._out_proj(self._final_norm(x, cond))
-        
+
         # Remove CLS token before unpatchifying: [B, num_patches + 1, patch_dim] -> [B, num_patches, patch_dim]
         out = out[:, 1:, :]  # Skip the first token (CLS token)
 
