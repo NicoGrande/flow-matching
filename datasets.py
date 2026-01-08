@@ -109,4 +109,3 @@ def get_imagenet_dataloaders(config: TrainingConfig):
     )
 
     return trainloader, valloader
-

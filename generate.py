@@ -88,6 +88,8 @@ def generate_images(
     # Shape: (num_images, input_dim, height, width)
     x = torch.randn(num_images, config.input_dim, height, width, device=device)
 
+    labels = torch.randint(num_images, config.num_classes)
+
     # Time steps from 0 to 1
     dt = 1.0 / num_steps
     timesteps = torch.linspace(0, 1, num_steps + 1, device=device)
@@ -100,7 +102,7 @@ def generate_images(
             t_current = t.expand(num_images)
 
             # Predict velocity field: v_theta(x_t, t)
-            v_pred = model(x, t_current)
+            v_pred = model(x, t_current, labels)
 
             # Euler step: x_{t+dt} = x_t + dt * v_theta(x_t, t)
             x = x + dt * v_pred

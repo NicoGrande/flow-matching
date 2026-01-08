@@ -3,6 +3,7 @@
 
 # Dataset
 dataset: cifar10
+num_classes: 10
 
 # Model parameters
 embedding_dim: 384

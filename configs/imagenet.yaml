@@ -3,6 +3,7 @@
 
 # Dataset
 dataset: imagenet
+num_classes: 1000
 
 # Model parameters
 embedding_dim: 768

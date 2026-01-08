@@ -5,9 +5,12 @@ import yaml
 
 class TrainingConfig(BaseModel):
     """Configuration for training the Diffusion Transformer model."""
-    
+
     # Dataset
     dataset: str = Field(default="cifar10", description="Which dataset to use")
+    num_classes: int = Field(
+        default=10, description="The number of classes in the dataset"
+    )
 
     # Model parameters
     embedding_dim: int = Field(..., description="Dimension of embeddings")

@@ -95,39 +95,6 @@ class SelfAttention(nn.Module):
         return self._out_proj(out)
 
 
-class AdaLayerNorm(nn.Module):
-    """Adaptive layer normalization conditioned on external features."""
-
-    def __init__(self, config) -> None:
-        """Initialize adaptive layer normalization.
-
-        Args:
-            config: Configuration object containing:
-                - embedding_dim: Dimension of embeddings.
-        """
-        super().__init__()
-        self._embedding_dim = config.embedding_dim
-        self._ln = nn.LayerNorm(self._embedding_dim, elementwise_affine=False)
-        self._linear = nn.Linear(self._embedding_dim, self._embedding_dim * 2)
-
-    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        """Apply adaptive layer normalization.
-
-        Args:
-            x: Input tensor of shape (batch_size, sequence_len, embedding_dim).
-            cond: Conditioning tensor of shape (batch_size, embedding_dim).
-
-        Returns:
-            Normalized and scaled tensor of shape (batch_size, sequence_len, embedding_dim).
-        """
-        # x: [B, S, D]
-        x = self._ln(x)
-
-        # cond: [B, D] --> [B, 1, 2 * D] --> 2 x [B, 1, D]
-        scale, shift = self._linear(cond).unsqueeze(1).chunk(2, dim=-1)
-        return x * (1 + scale) + shift
-
-
 class TransformerBlock(nn.Module):
     """Transformer block with adaptive layer normalization and self-attention."""
 
@@ -142,14 +109,22 @@ class TransformerBlock(nn.Module):
         super().__init__()
 
         self.mha = SelfAttention(config)
-        self.ln_mha = AdaLayerNorm(config)
+        self.ln_mha = nn.LayerNorm(config.embedding_dim, elementwise_affine=False)
+
+        self.ada_ln_zero_mlp = nn.Sequential(
+            nn.SiLU(), nn.Linear(config.embedding_dim, config.embedding_dim * 6)
+        )
+
+        # Zero initialize for accelerated large scale training
+        nn.init.constant_(self.ada_ln_zero_mlp[-1].weight, 0.0)
+        nn.init.constant_(self.ada_ln_zero_mlp[-1].bias, 0.0)
 
         self.mlp = nn.Sequential(
             nn.Linear(config.embedding_dim, config.embedding_dim * 4),
             nn.GELU(),
             nn.Linear(config.embedding_dim * 4, config.embedding_dim),
         )
-        self.ln_mlp = AdaLayerNorm(config)
+        self.ln_mlp = nn.LayerNorm(config.embedding_dim, elementwise_affine=False)
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """Apply transformer block with residual connections.
@@ -161,15 +136,33 @@ class TransformerBlock(nn.Module):
         Returns:
             Output tensor of shape (batch_size, sequence_len, embedding_dim).
         """
+        # pre-layer norm for better gradient flow
+        x_norm = self.ln_mha(x)
+
+        # compute conditional scale and shift parameters, chunk across embedding dim
+        mha_gamma, mha_beta, mha_alpha, mlp_gamma, mlp_beta, mlp_alpha = (
+            self.ada_ln_zero_mlp(cond).chunk(6, dim=-1)
+        )
+
+        # scale + shift x_norm
+        x_norm = x_norm * (1 + mha_gamma) + mha_beta
+
         # attn_out: [B, S, D] --> [B, S, D]
-        mha_out = self.mha(self.ln_mha(x, cond))
+        mha_out = self.mha(x_norm) * (1 + mha_alpha)
+
+        # first residual connection
         x = x + mha_out
 
-        # mlp_out: [B, S, D] --> [B, S, D]
-        mlp_out = self.mlp(self.ln_mlp(x, cond))
-        x = x + mlp_out
+        # pre-layer norm for better gradient flow
+        x_norm = self.ln_mlp(x)
 
-        return x
+        # scale + shift x_norm
+        x_norm = x_norm * (1 + mlp_gamma) + mlp_beta
+
+        # mlp_out: [B, S, D] --> [B, S, D]
+        mlp_out = self.mlp(x_norm) * (1 + mlp_alpha)
+
+        return x + mlp_out
 
 
 class PatchEmbedding(nn.Module):
@@ -198,8 +191,6 @@ class PatchEmbedding(nn.Module):
             kernel_size=self._patch_size,
             stride=self._patch_size,
         )
-        # CLS token: [1, D] - will be broadcast to [B, 1, D] in forward
-        self._cls = nn.Parameter(torch.randn(1, self._embedding_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Convert image patches to embeddings with CLS token.
@@ -217,9 +208,6 @@ class PatchEmbedding(nn.Module):
         # Flatten spatial dimensions: [B, D, H', W'] --> [B, D, H' * W'] --> [B, H' * W', D]
         x = x.flatten(2).transpose(1, 2)
 
-        # Broadcast CLS token to batch size and concatenate: [B, S, D] --> [B, S + 1, D]
-        cls_token = self._cls.expand(B, -1, -1)  # [1, D] --> [B, 1, D]
-        x = torch.cat([cls_token, x], dim=1)
         return x
 
 
@@ -240,14 +228,18 @@ class DiffusionTransformer(nn.Module):
         super().__init__()
         self.config = config
         self._embedding_dim = config.embedding_dim
+        self._num_classes = config.num_classes
         self._sequence_len = config.sequence_len
         self._patch_size = config.patch_size
         self._input_dim = config.input_dim
 
         # We use a fixed learned positional embedding since we are working with CIFAR10
         self._pos_embedding = nn.Parameter(
-            torch.randn(1, self._sequence_len + 1, self._embedding_dim)
+            torch.randn(1, self._sequence_len, self._embedding_dim)
         )
+
+        # Fixed class embeddings given vision datasets
+        self._class_embedding = nn.Embedding(self._num_classes, self._embedding_dim)
 
         # Setup patch embedding layer
         self._patch_emb = PatchEmbedding(config)
@@ -264,7 +256,7 @@ class DiffusionTransformer(nn.Module):
             [TransformerBlock(config) for _ in range(config.num_transformer_blocks)]
         )
 
-        self._final_norm = AdaLayerNorm(config)
+        self._final_norm = nn.LayerNorm(config.embedding_dim)
         self._out_proj = nn.Linear(
             self._embedding_dim, self._patch_size**2 * self._input_dim
         )
@@ -287,12 +279,15 @@ class DiffusionTransformer(nn.Module):
         x = x.permute(0, 5, 1, 3, 2, 4).reshape(B, C, H, W)
         return x
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass through the diffusion transformer.
 
         Args:
             x: Noisy images of shape (batch_size, input_dim, height, width).
             t: Timesteps of shape (batch_size,) with values in [0, 1] for flow matching.
+            y: Class label of shape (batch_size,) with values in [0, num_classes] for flow matching.
 
         Returns:
             Predicted velocity field of shape (batch_size, input_dim, height, width).
@@ -303,14 +298,14 @@ class DiffusionTransformer(nn.Module):
 
         # Compute time embeddings
         t_emb = get_sinusoidal_embedding(t, self._embedding_dim)
-        cond = self._time_mlp(t_emb)
+        t_emb = self._time_mlp(t_emb)
+
+        y_emb = self._class_embedding(y)
+        cond = t_emb + y_emb
 
         for transformer_block in self._transformer_blocks:
             x = transformer_block(x, cond)
 
-        out = self._out_proj(self._final_norm(x, cond))
-
-        # Remove CLS token before unpatchifying: [B, num_patches + 1, patch_dim] -> [B, num_patches, patch_dim]
-        out = out[:, 1:, :]  # Skip the first token (CLS token)
+        out = self._out_proj(self._final_norm(x))
 
         return self._unpatchify(out)

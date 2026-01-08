@@ -204,8 +204,9 @@ def train(yaml_path: Optional[str] = None):
 
         for batch_idx, batch in enumerate(train_dataloader):
             # CIFAR10 returns (images, labels) tuple
-            images, _ = batch
+            images, labels = batch
             images = images.to(device)
+            labels = labels.to(device)
             batch_size = images.size(0)
 
             optimizer.zero_grad()
@@ -225,7 +226,7 @@ def train(yaml_path: Optional[str] = None):
             )
 
             # Predict vector field v_theta(x_t, t)
-            v_pred = model(interpolated, t_values)
+            v_pred = model(interpolated, t_values, labels)
 
             # Compute flow matching objective: ||v_theta(x_t, t) - (x_1 - x_0)||^2
             # Target velocity field: v = x_1 - x_0 = images - noise
@@ -285,8 +286,9 @@ def train(yaml_path: Optional[str] = None):
         test_batch_count = 0
         for batch_idx, batch in enumerate(test_dataloader):
             with torch.no_grad():
-                images, _ = batch
+                images, labels = batch
                 images = images.to(device)
+                labels = labels.to(device)
                 batch_size = images.size(0)
 
                 # Get flow matching interpolated images
@@ -304,7 +306,7 @@ def train(yaml_path: Optional[str] = None):
                 )
 
                 # Predict vector field v_theta(x_t, t)
-                v_pred = model(interpolated, t_values)
+                v_pred = model(interpolated, t_values, labels)
 
                 # Compute flow matching objective: ||v_theta(x_t, t) - (x_1 - x_0)||^2
                 # Target velocity field: v = x_1 - x_0 = images - noise
