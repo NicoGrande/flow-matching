@@ -88,7 +88,8 @@ def generate_images(
     # Shape: (num_images, input_dim, height, width)
     x = torch.randn(num_images, config.input_dim, height, width, device=device)
 
-    labels = torch.randint(num_images, config.num_classes)
+    # Shape: (num_images, num_classes)
+    labels = torch.randint(0, 10, (num_images,), device=device)
 
     # Time steps from 0 to 1
     dt = 1.0 / num_steps

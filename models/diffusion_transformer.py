@@ -51,7 +51,7 @@ class SelfAttention(nn.Module):
 
         self._head_dim = self._embedding_dim // self._num_heads
 
-        self._dropout = nn.Dropout(p=0.1)
+        self._dropout = nn.Dropout(p=0.0)
         self._q_proj = nn.Linear(config.embedding_dim, config.embedding_dim)
         self._k_proj = nn.Linear(config.embedding_dim, config.embedding_dim)
         self._v_proj = nn.Linear(config.embedding_dim, config.embedding_dim)
@@ -148,7 +148,7 @@ class TransformerBlock(nn.Module):
         x_norm = x_norm * (1 + mha_gamma) + mha_beta
 
         # attn_out: [B, S, D] --> [B, S, D]
-        mha_out = self.mha(x_norm) * (1 + mha_alpha)
+        mha_out = self.mha(x_norm) * mha_alpha
 
         # first residual connection
         x = x + mha_out
@@ -160,7 +160,7 @@ class TransformerBlock(nn.Module):
         x_norm = x_norm * (1 + mlp_gamma) + mlp_beta
 
         # mlp_out: [B, S, D] --> [B, S, D]
-        mlp_out = self.mlp(x_norm) * (1 + mlp_alpha)
+        mlp_out = self.mlp(x_norm) * mlp_alpha
 
         return x + mlp_out
 
@@ -232,6 +232,7 @@ class DiffusionTransformer(nn.Module):
         self._sequence_len = config.sequence_len
         self._patch_size = config.patch_size
         self._input_dim = config.input_dim
+        self._frequency_embedding_dim = 256
 
         # We use a fixed learned positional embedding since we are working with CIFAR10
         self._pos_embedding = nn.Parameter(
@@ -246,9 +247,9 @@ class DiffusionTransformer(nn.Module):
 
         # Setup time embedding layer
         self._time_mlp = nn.Sequential(
-            nn.Linear(self._embedding_dim, self._embedding_dim * 4),
-            nn.GELU(),
-            nn.Linear(self._embedding_dim * 4, self._embedding_dim),
+            nn.Linear(self._frequency_embedding_dim, self._embedding_dim),
+            nn.SiLU(),
+            nn.Linear(self._embedding_dim, self._embedding_dim),
         )
 
         # Setup transformer backbone
@@ -256,7 +257,11 @@ class DiffusionTransformer(nn.Module):
             [TransformerBlock(config) for _ in range(config.num_transformer_blocks)]
         )
 
-        self._final_norm = nn.LayerNorm(config.embedding_dim)
+        self._final_norm = nn.LayerNorm(config.embedding_dim, elementwise_affine=False)
+        self._final_ada_ln = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(config.embedding_dim, 2 * config.embedding_dim)
+        )
         self._out_proj = nn.Linear(
             self._embedding_dim, self._patch_size**2 * self._input_dim
         )
@@ -297,15 +302,17 @@ class DiffusionTransformer(nn.Module):
         x = x + self._pos_embedding
 
         # Compute time embeddings
-        t_emb = get_sinusoidal_embedding(t, self._embedding_dim)
+        t_emb = get_sinusoidal_embedding(t, self._frequency_embedding_dim)
         t_emb = self._time_mlp(t_emb)
 
         y_emb = self._class_embedding(y)
         cond = t_emb + y_emb
+        cond = cond.unsqueeze(1)
 
         for transformer_block in self._transformer_blocks:
             x = transformer_block(x, cond)
 
-        out = self._out_proj(self._final_norm(x))
+        scale, shift = self._final_ada_ln(cond).chunk(2, dim=-1)
+        out = self._out_proj(self._final_norm(x) * (1 + scale) + shift)
 
         return self._unpatchify(out)

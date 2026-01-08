@@ -260,7 +260,7 @@ def train(yaml_path: Optional[str] = None):
             # Save checkpoint
             if global_step % config.save_interval == 0:
                 checkpoint_path = os.path.join(
-                    config.checkpoint_dir, f"checkpoint_step_{global_step}.pt"
+                    config.checkpoint_dir, f"checkpoint_{config.dataset}.pt"
                 )
                 torch.save(
                     {
