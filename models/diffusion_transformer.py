@@ -27,6 +27,57 @@ def get_sinusoidal_embedding(
     return embedding
 
 
+def get_1d_sinusoidal_position_embedding(
+    position: torch.Tensor, embedding_dim: int
+) -> torch.Tensor:
+    """Get 1D sinusoidal positional embedding for a list of positions.
+
+    Args:
+        position: Position tensor of shape (num_positions,).
+        embedding_dim: The dimension of the embedding (must be even).
+
+    Returns:
+        Sinusoidal embedding tensor of shape (num_positions, embedding_dim).
+    """
+    if embedding_dim % 2:
+        raise ValueError("Embedding dimension for positional encoding must be even.")
+
+    omega = torch.arange(
+        embedding_dim // 2, device=position.device, dtype=torch.float32
+    )
+    omega = 1.0 / (10000 ** (omega / (embedding_dim / 2)))
+
+    position = position.reshape(-1)
+    angles = position.unsqueeze(-1) * omega
+    embedding = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
+    return embedding
+
+
+def get_2d_sinusoidal_position_embedding(
+    grid_size: int, embedding_dim: int
+) -> torch.Tensor:
+    """Get 2D sinusoidal positional embedding over a square grid.
+
+    Args:
+        grid_size: Height/width of the grid.
+        embedding_dim: Dimension of embeddings (must be even).
+
+    Returns:
+        Positional embedding tensor of shape (grid_size * grid_size, embedding_dim).
+    """
+    if embedding_dim % 2:
+        raise ValueError("Embedding dimension for positional encoding must be even.")
+
+    grid_h = torch.arange(grid_size, dtype=torch.float32)
+    grid_w = torch.arange(grid_size, dtype=torch.float32)
+    grid = torch.meshgrid(grid_w, grid_h, indexing="xy")
+    grid = torch.stack(grid, dim=0).reshape(2, -1)
+
+    emb_h = get_1d_sinusoidal_position_embedding(grid[0], embedding_dim // 2)
+    emb_w = get_1d_sinusoidal_position_embedding(grid[1], embedding_dim // 2)
+    return torch.cat([emb_h, emb_w], dim=-1)
+
+
 class SelfAttention(nn.Module):
     """Multi-head self-attention mechanism."""
 
@@ -234,10 +285,17 @@ class DiffusionTransformer(nn.Module):
         self._input_dim = config.input_dim
         self._frequency_embedding_dim = 256
 
-        # We use a fixed learned positional embedding since we are working with CIFAR10
-        self._pos_embedding = nn.Parameter(
-            torch.randn(1, self._sequence_len, self._embedding_dim)
-        )
+        grid_size = int(math.sqrt(self._sequence_len))
+        if grid_size * grid_size != self._sequence_len:
+            raise ValueError(
+                "Sequence length must form a perfect square for 2D positional embedding."
+            )
+
+        pos_embedding = get_2d_sinusoidal_position_embedding(
+            grid_size=grid_size, embedding_dim=self._embedding_dim
+        ).unsqueeze(0)
+
+        self.register_buffer("_pos_embedding", pos_embedding, persistent=False)
 
         # Fixed class embeddings given vision datasets
         self._class_embedding = nn.Embedding(self._num_classes, self._embedding_dim)
@@ -259,8 +317,7 @@ class DiffusionTransformer(nn.Module):
 
         self._final_norm = nn.LayerNorm(config.embedding_dim, elementwise_affine=False)
         self._final_ada_ln = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(config.embedding_dim, 2 * config.embedding_dim)
+            nn.SiLU(), nn.Linear(config.embedding_dim, 2 * config.embedding_dim)
         )
         self._out_proj = nn.Linear(
             self._embedding_dim, self._patch_size**2 * self._input_dim

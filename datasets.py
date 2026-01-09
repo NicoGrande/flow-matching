@@ -47,6 +47,47 @@ def get_cifar10_dataloaders(config: TrainingConfig):
     return trainloader, testloader
 
 
+def get_mnist_dataloaders(config: TrainingConfig):
+    """Get MNIST data loaders.
+
+    Args:
+        config: Training configuration.
+
+    Returns:
+        Tuple of (train_loader, test_loader).
+    """
+    # Define transformations (convert to tensor and normalize to [-1, 1])
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+    )
+
+    # Load training data
+    trainset = torchvision.datasets.MNIST(
+        root=config.data_root, train=True, download=True, transform=transform
+    )
+    trainloader = DataLoader(
+        trainset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=True if config.get_device().type == "cuda" else False,
+    )
+
+    # Load test data
+    testset = torchvision.datasets.MNIST(
+        root=config.data_root, train=False, download=True, transform=transform
+    )
+    testloader = DataLoader(
+        testset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=True if config.get_device().type == "cuda" else False,
+    )
+
+    return trainloader, testloader
+
+
 def get_imagenet_dataloaders(config: TrainingConfig):
     """Get ImageNet data loaders.
 

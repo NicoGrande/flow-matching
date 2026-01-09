@@ -1,0 +1,32 @@
+# Training Configuration for Diffusion Transformer (Flow Matching)
+# MNIST: 28x28 images, with patch_size=4: 7x7=49 patches
+
+# Dataset
+dataset: mnist
+num_classes: 10
+
+# Model parameters
+embedding_dim: 256
+num_heads: 4
+num_transformer_blocks: 4
+patch_size: 4
+sequence_len: 49  # (28/4)^2 = 49 patches for MNIST
+input_dim: 1  # Grayscale channel
+
+# Training parameters
+batch_size: 128
+learning_rate: 0.0003
+num_epochs: 100
+optimizer: adam  # Options: 'adam' or 'sgd'
+weight_decay: 0.0001
+
+# Device and data parameters
+device: auto  # Options: 'auto', 'cuda', or 'cpu'
+num_workers: 2
+data_root: ./data
+
+# Logging and checkpointing
+log_interval: 100  # Log every N batches
+save_interval: 1000  # Save checkpoint every N batches
+checkpoint_dir: ./checkpoints
+

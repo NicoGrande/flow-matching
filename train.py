@@ -12,6 +12,7 @@ import glob
 from config import TrainingConfig
 from datasets import get_cifar10_dataloaders
 from datasets import get_imagenet_dataloaders
+from datasets import get_mnist_dataloaders
 from models.diffusion_transformer import DiffusionTransformer
 
 
@@ -133,6 +134,8 @@ def train(yaml_path: Optional[str] = None):
         train_dataloader, test_dataloader = get_cifar10_dataloaders(config)
     elif config.dataset == "imagenet":
         train_dataloader, test_dataloader = get_imagenet_dataloaders(config)
+    elif config.dataset == "mnist":
+        train_dataloader, test_dataloader = get_mnist_dataloaders(config)
     else:
         raise ValueError(f"Unknown dataset {config.dataset}.")
 
